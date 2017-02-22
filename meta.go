@@ -52,35 +52,32 @@ func getMeta(key string, metaSpace string, output io.Writer) {
 // Store meta to file with key and value
 func setMeta(key string, value string, metaSpace string) {
 	metaFilePath := metaSpace + "/" + metaFile
-	var metaInterface map[string]interface{}
+	var previousMeta map[string]interface{}
 
 	_, err := stat(metaFilePath)
 	// Not exist directory
 	if err != nil {
 		setupDir(metaSpace)
 		// Initialize interface if first setting meta
-		metaInterface = make(map[string]interface{})
+		previousMeta = make(map[string]interface{})
 	} else {
 		metaJson, _ := readFile(metaFilePath)
 		// Exist meta.json
 		if len(metaJson) != 0 {
-			err = json.Unmarshal(metaJson, &metaInterface)
+			err = json.Unmarshal(metaJson, &previousMeta)
 			if err != nil {
 				panic(err)
 			}
 		} else {
 			// Exist meta.json but it is empty
-			metaInterface = make(map[string]interface{})
+			previousMeta = make(map[string]interface{})
 		}
 	}
 
-	key, parsedValue := parseMetaValue(key, value, metaInterface)
-	fmt.Printf("parsed %+v", parsedValue)
-	//fmt.Println("\n", reflect.TypeOf(metaInterface[key]).Kind())
-	// valueがarrayのとき、既存のarrayを消してしまわないようにもってくる必要がある
-	metaInterface[key] = parsedValue
+	key, parsedValue := parseMetaValue(key, value, previousMeta)
+	previousMeta[key] = parsedValue
 
-	resultJson, err := json.Marshal(metaInterface)
+	resultJson, err := json.Marshal(previousMeta)
 
 	err = writeFile(metaFilePath, resultJson, 0666)
 	if err != nil {
@@ -90,76 +87,50 @@ func setMeta(key string, value string, metaSpace string) {
 
 // Parse arguments of meta-cli to JSON
 func parseMetaValue(key string, value string, previousMeta interface{}) (string, interface{}) {
-	fmt.Println("key", key)
-	fmt.Println("value", value)
-	fmt.Println("previousMeta", previousMeta)
-
 	for p, c := range key {
-		fmt.Println(p, string([]rune{c}))
 		if string([]rune{c}) == "[" {
 			nextChar := key[p+1]
 			if nextChar == []byte("]")[0] {
 				// Value is array
 				var a [1]interface{}
-				key = key[0:p] + key[p+2:] // remove bracket[] from key
+				key = key[0:p] + key[p+2:] // Remove bracket[] from key
 				key, a[0] = parseMetaValue(key, value, previousMeta)
 				return key, a
 			} else {
 				// Value is array with index
-				fmt.Println("array with index")
 				var i int
 				for i = p + 1; ; i++ {
 					_, err := strconv.Atoi(string(key[i]))
-					//fmt.Println("i, key[i]", i, string(key[i]))
 					if err != nil {
 						break
 					}
 				}
-				//fmt.Println("i", i)
-				//fmt.Println("keykeykey", key[p+1:i])
-				metaIndex, _ := strconv.Atoi(key[p+1 : i])
-				key = key[0:p] + key[i+1:] // remove bracket[num] from key
-				fmt.Println("shorten key", key)
-				fmt.Println("metaIndex", metaIndex)
+				metaIndex, _ := strconv.Atoi(key[p+1 : i]) // e.g. if array[10], get "10"
+				key = key[0:p] + key[i+1:]                 // Remove bracket[num] from key
 
-				// interface to map
+				// Convert previousMeta Interface to Map
 				v := reflect.ValueOf(previousMeta)
-				fmt.Printf("previousMeta %+v \n", previousMeta)
-				fmt.Printf("type of previousMeta %+v \n", v.Kind())
 				var previousMetaMap map[string]interface{}
 				previousMetaMap = make(map[string]interface{})
-				var prevKey string
-
+				var previousKey string
 				if v.Kind() == reflect.Map {
-					for i, k := range v.MapKeys() {
-						fmt.Println("aaaaaa", i, k.Interface(), v.MapIndex(k))
-						prevKey, _ = k.Interface().(string)
-						previousMetaMap[prevKey] = v.MapIndex(k).Interface()
+					for _, k := range v.MapKeys() {
+						previousKey, _ = k.Interface().(string)
+						previousMetaMap[previousKey] = v.MapIndex(k).Interface()
 					}
-				} else if v.Kind() == reflect.Slice {
-					fmt.Println("arry", v.Interface())
 				}
-				// この時点でpreviousMetaMapには、元のjsonデータと同じものがはいっているはず
 
-				fmt.Printf("previousMeta %+v \n", previousMeta)
-				fmt.Printf("previousMetaMap %+v \n", previousMetaMap)
-				fmt.Println("prevKey, previousMetaMap[prevkey]:", prevKey, previousMetaMap[prevKey])
+				var a []interface{}
 
-				fmt.Println("key, prevKey", key, prevKey)
-
-				// meta[key] is not exist, create array with nil
-				// 既存のJSONに、指定されたキーの値がないとき
-				if previousMetaMap[prevKey] == nil && v.Kind() != reflect.Slice {
-					fmt.Println("new Array with index")
-					var a []interface{}
+				// previousMeta[previousKey] is empty or string, create array with null except "value"
+				if (previousMetaMap[previousKey] == nil && v.Kind() != reflect.Slice) || reflect.ValueOf(previousMetaMap[previousKey]).Kind() == reflect.String {
 					a = make([]interface{}, metaIndex+1)
-					key, a[metaIndex] = parseMetaValue(key, value, previousMetaMap[prevKey])
+					key, a[metaIndex] = parseMetaValue(key, value, previousMetaMap[previousKey])
 					return key, a
 				} else if v.Kind() == reflect.Slice {
 					// 既存のJSONに指定されたキーの値があるとき
 					// 値が配列
 					fmt.Println("Sliceeeeeeeeee", v.Len())
-					var a []interface{}
 					if metaIndex+1 > v.Len() {
 						a = make([]interface{}, metaIndex+1)
 						key, a[metaIndex] = parseMetaValue(key, value, nil)
@@ -182,11 +153,8 @@ func parseMetaValue(key string, value string, previousMeta interface{}) (string,
 					return key, a
 				} else {
 					// 既存のJSONに指定されたキーの値があるとき
-					// 値がobject
-					// 値が文字列
-					var a []interface{}
 					a = make([]interface{}, metaIndex+1)
-					prev := reflect.ValueOf(previousMetaMap[prevKey])
+					prev := reflect.ValueOf(previousMetaMap[previousKey])
 					if metaIndex+1 > prev.Len() {
 						a = make([]interface{}, metaIndex+1)
 						key, a[metaIndex] = parseMetaValue(key, value, nil)
@@ -196,16 +164,19 @@ func parseMetaValue(key string, value string, previousMeta interface{}) (string,
 					}
 
 					fmt.Println("metaIndex", metaIndex)
-					for i := 0; i < prev.Len(); i++ {
-						if i != metaIndex {
-							a[i] = prev.Index(i).Interface()
+					// Nothing to do when previous value is object (object(map) to array logic)
+					if prev.Kind() != reflect.Map {
+						for i := 0; i < prev.Len(); i++ {
+							if i != metaIndex {
+								a[i] = prev.Index(i).Interface()
+							}
+							fmt.Println("i, prev[i]", i, prev.Index(i).Interface())
+							fmt.Println("i, a[i]", i, a[i])
 						}
-						fmt.Println("i, prev[i]", i, prev.Index(i).Interface())
-						fmt.Println("i, a[i]", i, a[i])
 					}
 
 					fmt.Println("key a[metaIndex]", key, a[metaIndex])
-					fmt.Println("previousMeta", key, previousMetaMap[prevKey])
+					fmt.Println("previousMeta", key, previousMetaMap[previousKey])
 					return key, a
 				}
 			}
